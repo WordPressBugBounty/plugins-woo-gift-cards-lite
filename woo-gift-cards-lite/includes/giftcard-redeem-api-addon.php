@@ -380,15 +380,8 @@ function wps_permission_check( $request ) {
         return new WP_Error( 'rest_forbidden', esc_html__( 'API keys are not set properly on your site.', 'woo-gift-cards-lite' ), array( 'status' => 403 ) );
     }
 	
-	if ( $consumer_key === $wps_wgm_gifting_api_keys['consumer_key'] && $consumer_secret === $wps_wgm_gifting_api_keys['consumer_secret'] ) {
-		if ( empty( $license ) ) {
-            return true;
-        }
-
-		if ( trim( $client_license_code ) === trim( $license ) ) {
-			return true;
-		}
-		return new WP_Error( 'rest_forbidden', esc_html__( 'Invalid license key.', 'woo-gift-cards-lite' ), array( 'status' => 403 ) );
+	if ( $consumer_key === $wps_wgm_gifting_api_keys['consumer_key'] && $consumer_secret === $wps_wgm_gifting_api_keys['consumer_secret'] ) {		
+		return true;
 	}
 	return new WP_Error( 'rest_forbidden', esc_html__( 'Invalid API key details.', 'woo-gift-cards-lite' ), array( 'status' => 401 ) );
 }
