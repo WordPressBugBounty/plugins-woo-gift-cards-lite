@@ -76,7 +76,7 @@ class Woocommerce_Gift_Cards_Lite {
 		if ( defined( 'WPS_WGC_VERSION' ) ) {
 			$this->version = WPS_WGC_VERSION;
 		} else {
-			$this->version = '3.2.7';
+			$this->version = '3.2.8';
 		}
 		$this->plugin_name = 'woo-gift-cards-lite';
 
@@ -281,6 +281,9 @@ class Woocommerce_Gift_Cards_Lite {
 		$this->loader->add_action( 'init', $plugin_public, 'wps_uwgc_add_short_code_giftcard_balance_org' );
 		$this->loader->add_action( 'wp_ajax_wps_uwgc_check_gift_balance_org', $plugin_public, 'wps_uwgc_check_gift_balance_org' );
 		$this->loader->add_action( 'wp_ajax_nopriv_wps_uwgc_check_gift_balance_org', $plugin_public, 'wps_uwgc_check_gift_balance_org' );
+		// AI-powered message suggestions.
+		$this->loader->add_action( 'wp_ajax_wps_gc_ai_suggest', $plugin_public, 'wps_gc_ai_suggest_message' );
+		$this->loader->add_action( 'wp_ajax_nopriv_wps_gc_ai_suggest', $plugin_public, 'wps_gc_ai_suggest_message' );
 				$other_setting = get_option( 'wps_wgm_other_settings', array() );
 		if ( is_array( $other_setting ) && ! empty( $other_setting ) && array_key_exists( 'wps_wgm_additional_apply_coupon_disable', $other_setting ) ) {
 			$wps_wgm_apply_coupon_disable = $other_setting['wps_wgm_additional_apply_coupon_disable'];
@@ -291,6 +294,8 @@ class Woocommerce_Gift_Cards_Lite {
 		$this->loader->add_filter( 'woocommerce_order_item_get_formatted_meta_data', $plugin_public, 'wps_wgm_woocommerce_hide_order_metafields', 10, 1 );
 		$this->loader->add_filter( 'wc_price_based_country_product_types_overriden', $plugin_public, 'wps_wgm_price_based_country_giftcard' );
 		$this->loader->add_filter( 'woocommerce_hold_stock_for_checkout', $plugin_public, 'wps_wgm_apply_already_created_giftcard_coupons' );
+		// Exclude gift cards from free shipping calculation.
+		$this->loader->add_filter( 'woocommerce_cart_shipping_packages', $plugin_public, 'wps_wgc_exclude_gc_from_free_shipping', 10, 1 );
 		// Compatibility with Flatsome theme minicart price issue.
 		$this->loader->add_filter( 'woocommerce_cart_item_price', $plugin_public, 'wps_mini_cart_product_price', 10, 3 );
 		// Compatibilty with WPS Currency Switcher.
