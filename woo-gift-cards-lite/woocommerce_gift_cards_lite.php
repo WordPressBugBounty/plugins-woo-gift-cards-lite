@@ -1,4 +1,5 @@
 <?php
+// phpcs:ignoreFile WordPress.Files.FileName.NotHyphenatedLowercase, WordPress.Files.FileName.InvalidClassFileName
 /**
  * The plugin bootstrap file
  *
@@ -15,7 +16,7 @@
  * Plugin Name:       Ultimate Gift Cards For WooCommerce
  * Plugin URI:        https://wordpress.org/plugins/woo-gift-cards-lite/?utm_source=wpswings-giftcards-org&utm_medium=giftcards-org-backend&utm_campaign=org
  * Description:       <code><strong>Ultimate Gift Cards For WooCommerce</strong></code> allows merchants to create and sell fascinating Gift Card Product with multiple price variation. <a href="https://wpswings.com/woocommerce-plugins/?utm_source=wpswings-giftcards-shop&utm_medium=giftcards-org-backend&utm_campaign=shop-page" target="_blank"> Elevate your e-commerce store by exploring more on <strong> WP Swings </strong></a>.
- * Version:           3.2.8
+ * Version:           3.2.9
  * Author:            WP Swings
  * Author URI:        https://wpswings.com/?utm_source=wpswings-giftcards-official&utm_medium=giftcards-org-backend&utm_campaign=official
  * License:           GPL-3.0+
@@ -24,10 +25,10 @@
  * Requires Plugins:  woocommerce
  * Tested up to:      7.0
  * Requires at least: 6.7
- * WC tested up to:   10.9.3
+ * WC tested up to:   10.9.4
  * WC requires at least: 6.5
  * Requires PHP:      7.4
- * Domain Path:       /languages
+ * Domain Path:       /languagess
  */
 
 // If this file is called directly, abort.
@@ -73,7 +74,7 @@ if ( $activated ) {
 	define( 'WPS_WGC_DIRPATH', plugin_dir_path( __FILE__ ) );
 	define( 'WPS_WGC_URL', plugin_dir_url( __FILE__ ) );
 	define( 'WPS_WGC_ADMIN_URL', admin_url() );
-	define( 'WPS_WGC_VERSION', '3.2.8' );
+	define( 'WPS_WGC_VERSION', '3.2.9' );
 	define( 'WPS_WGC_ONBOARD_PLUGIN_NAME', 'Ultimate Gift Cards For WooCommerce' );
 	define( 'WPS_GIFT_TEMPLATE_URL', 'https://demo.wpswings.com/client-notification/' );
 	/**
@@ -214,7 +215,7 @@ if ( $activated ) {
 		if ( defined( 'WC_VERSION' ) && version_compare( WC_VERSION, '6.5', '<' ) ) {
 			deactivate_plugins( plugin_basename( __FILE__ ) );
 			wp_die(
-				esc_html__( 'Ultimate Gift Cards For WooCommerce requires WooCommerce 6.5 or higher. You are running WooCommerce ', 'woo-gift-cards-lite' ) . WC_VERSION,
+				esc_html__( 'Ultimate Gift Cards For WooCommerce requires WooCommerce 6.5 or higher. You are running WooCommerce ', 'woo-gift-cards-lite' ) . esc_html( WC_VERSION ),
 				esc_html__( 'Plugin Activation Error', 'woo-gift-cards-lite' ),
 				array( 'back_link' => true )
 			);
