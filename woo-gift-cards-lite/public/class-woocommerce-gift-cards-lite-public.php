@@ -1322,6 +1322,7 @@ class Woocommerce_Gift_Cards_Lite_Public {
 					$original_price             = 0;
 					$variable_price_description = 0;
 					$delivery_method            = '';
+					$contributor_emails         = '';
 					$order                      = wc_get_order( $order_id );
 					foreach ( $order->get_items() as $item_id => $item ) {
 						$mailsend        = false;
@@ -1375,8 +1376,9 @@ class Woocommerce_Gift_Cards_Lite_Public {
 
 								$order_subtotal = $order->get_subtotal(); // Subtotal including taxes and discounts.
 
-								$group_gift_amt = intval( $order_subtotal );
-								$values         = explode( ',', $value->value );
+								$group_gift_amt     = intval( $order_subtotal );
+								$contributor_emails = $value->value;
+								$values             = explode( ',', $value->value );
 
 								foreach ( $values  as $value->value ) {
 											$conti_prod_id   = get_option( 'contributor_product_id' );
@@ -1410,6 +1412,7 @@ class Woocommerce_Gift_Cards_Lite_Public {
 							'item_id'                    => $item_id,
 							'item_quantity'              => $item_quantity,
 							'datecheck'                  => $datecheck,
+							'contributor_emails'         => $contributor_emails,
 							'variable_price_description' => $variable_price_description,
 						);
 						wps_wgm_hpos_update_meta_data( $order_id, 'temp_item_id', $item_id );
@@ -1427,7 +1430,12 @@ class Woocommerce_Gift_Cards_Lite_Public {
 							} else {
 								$inc_tax_status = false;
 							}
-							$couponamont = $original_price;
+							// Security Fix CVE-2026-19436: Use actual amount paid per unit, not pre-discount price.
+							// Calculate per-unit price from actual line total to prevent value inflation on discounted purchases.
+							$item_total            = $item->get_total(); // Actual amount paid after all discounts.
+							$item_quantity_check   = $item->get_quantity();
+							$actual_per_unit_price = $item_quantity_check > 0 ? ( $item_total / $item_quantity_check ) : 0;
+							$couponamont           = max( 0, $actual_per_unit_price ); // Ensure non-negative value.
 
 							$wps_wgm_lite = true;
 							$wps_wgm_lite = apply_filters( 'wps_wgm_check_coupon_creation_mails', $wps_wgm_mail_template_data, $order_id, $item, $wps_wgm_lite );
@@ -1603,7 +1611,10 @@ class Woocommerce_Gift_Cards_Lite_Public {
 
 						if ( $wps_is_rechargeable ) {
 
-							$total = $order->get_subtotal() + $coupon->get_amount();
+							// Security Fix CVE-2026-19436: Use actual amount paid, not pre-discount subtotal.
+							// Calculate recharge amount from actual item total after discounts.
+							$item_total = $value->get_total(); // Actual amount paid after all discounts.
+							$total      = max( 0, $item_total ) + $coupon->get_amount();
 							$coupon->set_amount( $total );
 							// Save the changes.
 							$coupon->save();
@@ -2361,16 +2372,38 @@ class Woocommerce_Gift_Cards_Lite_Public {
 		$wallet_payment_gateway = new Wallet_System_For_Woocommerce();
 
 		if ( $coupon->get_id() !== 0 ) {
-			// Verify current user is the intended recipient.
-			$current_user_id    = get_current_user_id();
-			$current_user       = get_user_by( 'id', $current_user_id );
-			$recipient_email    = get_post_meta( $coupon_id, 'wps_wgm_giftcard_coupon_mail_to', true );
+			// Security Fix #45219: Verify current user is the intended recipient.
+			// This prevents attackers from hijacking cards by changing their account email.
+			$current_user_id         = get_current_user_id();
+			$current_user            = get_user_by( 'id', $current_user_id );
+			$recipient_user_id       = get_post_meta( $coupon_id, 'wps_wgm_giftcard_coupon_recipient_user_id', true );
+			$recipient_email         = get_post_meta( $coupon_id, 'wps_wgm_giftcard_coupon_mail_to', true );
+			$recipient_binding_token = get_post_meta( $coupon_id, 'wps_wgm_giftcard_recipient_binding_token', true );
 
-			// Check if current user's email matches the recipient email.
-			if ( ! $current_user || empty( $recipient_email ) || $current_user->user_email !== $recipient_email ) {
+			// Validate recipient authorization using the most secure method available.
+			// Priority: binding token > user ID > email (legacy only for old cards).
+			$is_authorized = false;
+
+			if ( ! empty( $recipient_binding_token ) ) {
+				// Most secure: validate using the random binding token delivered with the card.
+				// The token must be provided by the recipient as proof of card possession.
+				$provided_token = ! empty( $_POST['wps_gc_token'] ) ? sanitize_text_field( wp_unslash( $_POST['wps_gc_token'] ) ) : '';
+				if ( ! empty( $provided_token ) ) {
+					$is_authorized = hash_equals( $recipient_binding_token, $provided_token );
+				}
+			} elseif ( ! empty( $recipient_user_id ) ) {
+				// Fallback: validate by user ID (for cards issued between fix attempts).
+				$is_authorized = ( $current_user && $current_user_id === (int) $recipient_user_id );
+			} elseif ( ! empty( $recipient_email ) ) {
+				// Legacy: validate by email (ONLY for old cards created before any fix).
+				// This path is vulnerable but maintained for backwards compatibility.
+				$is_authorized = ( $current_user && $current_user->user_email === $recipient_email );
+			}
+
+			if ( ! $is_authorized ) {
 				$response = array(
 					'status'  => 'failed',
-					'message' => __( 'You are not authorized to redeem this gift card. This gift card was sent to a different email address.', 'woo-gift-cards-lite' ),
+					'message' => __( 'You are not authorized to redeem this gift card. This gift card was sent to a different recipient.', 'woo-gift-cards-lite' ),
 				);
 				echo wp_json_encode( $response );
 				wp_die();
@@ -2728,13 +2761,6 @@ class Woocommerce_Gift_Cards_Lite_Public {
 						if ( isset( $user_email ) && ! empty( $user_email ) ) {
 							if ( $user_email == $wps_check_email ) {
 								$html                = '<div class="amount_wrapper">';
-								$html               .= '<div style="margin-bottom: 8px;"><strong style="color: #666; font-size: 14px;">' . __( 'Coupon Code:', 'woo-gift-cards-lite' ) . '</strong></div>';
-								$html               .= '<div style="text-align: center; margin: 10px 0;">';
-								$html               .= '<span class="wps-balance-coupon-code" style="font-size: 20px; color: ' . $coupon_color . '; background: #fff; padding: 12px 20px; border: 2px dashed ' . $coupon_color . '; border-radius: 5px; display: inline-block; font-weight: 600; letter-spacing: 1px;">' . esc_html( $coupon ) . '</span>';
-								$html               .= '</div>';
-								$html               .= '<div style="text-align: center; margin: 10px 0 15px 0;">';
-								$html               .= '<button type="button" class="wps-copy-balance-btn" data-coupon="' . esc_attr( $coupon ) . '" style="background: ' . $button_color . '; color: #fff; border: none; padding: 10px 24px; border-radius: 3px; cursor: pointer; font-size: 14px; font-weight: 600;">' . __( 'Copy Code', 'woo-gift-cards-lite' ) . '</button>';
-								$html               .= '</div>';
 								$html               .= '<div><strong style="color: #666; font-size: 14px;">' . __( 'Balance:', 'woo-gift-cards-lite' ) . '</strong> <span style="font-size: 16px; font-weight: 600;">' . wc_price( $left_amount ) . '</span></div>';
 								$html               .= '</div>';
 								$response['result']  = true;
@@ -2750,13 +2776,6 @@ class Woocommerce_Gift_Cards_Lite_Public {
 						if ( empty( $order_id ) ) {
 							if ( in_array( $wps_check_email, $user_email ) ) {
 								$html                = '<div class="amount_wrapper">';
-								$html               .= '<div style="margin-bottom: 8px;"><strong style="color: #666; font-size: 14px;">' . __( 'Coupon Code:', 'woo-gift-cards-lite' ) . '</strong></div>';
-								$html               .= '<div style="text-align: center; margin: 10px 0;">';
-								$html               .= '<span class="wps-balance-coupon-code" style="font-size: 20px; color: ' . $coupon_color . '; background: #fff; padding: 12px 20px; border: 2px dashed ' . $coupon_color . '; border-radius: 5px; display: inline-block; font-weight: 600; letter-spacing: 1px;">' . esc_html( $coupon ) . '</span>';
-								$html               .= '</div>';
-								$html               .= '<div style="text-align: center; margin: 10px 0 15px 0;">';
-								$html               .= '<button type="button" class="wps-copy-balance-btn" data-coupon="' . esc_attr( $coupon ) . '" style="background: ' . $button_color . '; color: #fff; border: none; padding: 10px 24px; border-radius: 3px; cursor: pointer; font-size: 14px; font-weight: 600;">' . __( 'Copy Code', 'woo-gift-cards-lite' ) . '</button>';
-								$html               .= '</div>';
 								$html               .= '<div><strong style="color: #666; font-size: 14px;">' . __( 'Balance:', 'woo-gift-cards-lite' ) . '</strong> <span style="font-size: 16px; font-weight: 600;">' . wc_price( $left_amount ) . '</span></div>';
 								$html               .= '</div>';
 								$response['result']  = true;
@@ -2772,13 +2791,6 @@ class Woocommerce_Gift_Cards_Lite_Public {
 							if ( ( isset( $user_email ) && ! empty( $user_email ) ) || ( isset( $sender_email ) && ! empty( $sender_email ) ) ) {
 								if ( $user_email == $wps_check_email ) {
 									$html                = '<div class="amount_wrapper">';
-									$html               .= '<div style="margin-bottom: 8px;"><strong style="color: #666; font-size: 14px;">' . __( 'Coupon Code:', 'woo-gift-cards-lite' ) . '</strong></div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0;">';
-									$html               .= '<span class="wps-balance-coupon-code" style="font-size: 20px; color: ' . $coupon_color . '; background: #fff; padding: 12px 20px; border: 2px dashed ' . $coupon_color . '; border-radius: 5px; display: inline-block; font-weight: 600; letter-spacing: 1px;">' . esc_html( $coupon ) . '</span>';
-									$html               .= '</div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0 15px 0;">';
-									$html               .= '<button type="button" class="wps-copy-balance-btn" data-coupon="' . esc_attr( $coupon ) . '" style="background: ' . $button_color . '; color: #fff; border: none; padding: 10px 24px; border-radius: 3px; cursor: pointer; font-size: 14px; font-weight: 600;">' . __( 'Copy Code', 'woo-gift-cards-lite' ) . '</button>';
-									$html               .= '</div>';
 									$html               .= '<div><strong style="color: #666; font-size: 14px;">' . __( 'Balance:', 'woo-gift-cards-lite' ) . '</strong> <span style="font-size: 16px; font-weight: 600;">' . wc_price( $left_amount ) . '</span></div>';
 									$html               .= '</div>';
 									$response['result']  = true;
@@ -2786,13 +2798,6 @@ class Woocommerce_Gift_Cards_Lite_Public {
 									$response['message'] = __( 'Data Match Successfully!!', 'woo-gift-cards-lite' );
 								} elseif ( $sender_email == $wps_check_email ) {
 									$html                = '<div class="amount_wrapper">';
-									$html               .= '<div style="margin-bottom: 8px;"><strong style="color: #666; font-size: 14px;">' . __( 'Coupon Code:', 'woo-gift-cards-lite' ) . '</strong></div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0;">';
-									$html               .= '<span class="wps-balance-coupon-code" style="font-size: 20px; color: ' . $coupon_color . '; background: #fff; padding: 12px 20px; border: 2px dashed ' . $coupon_color . '; border-radius: 5px; display: inline-block; font-weight: 600; letter-spacing: 1px;">' . esc_html( $coupon ) . '</span>';
-									$html               .= '</div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0 15px 0;">';
-									$html               .= '<button type="button" class="wps-copy-balance-btn" data-coupon="' . esc_attr( $coupon ) . '" style="background: ' . $button_color . '; color: #fff; border: none; padding: 10px 24px; border-radius: 3px; cursor: pointer; font-size: 14px; font-weight: 600;">' . __( 'Copy Code', 'woo-gift-cards-lite' ) . '</button>';
-									$html               .= '</div>';
 									$html               .= '<div><strong style="color: #666; font-size: 14px;">' . __( 'Balance:', 'woo-gift-cards-lite' ) . '</strong> <span style="font-size: 16px; font-weight: 600;">' . wc_price( $left_amount ) . '</span></div>';
 									$html               .= '</div>';
 									$response['result']  = true;
@@ -2800,13 +2805,6 @@ class Woocommerce_Gift_Cards_Lite_Public {
 									$response['message'] = __( 'Data Match Successfully!!', 'woo-gift-cards-lite' );
 								} elseif ( $wps_sender_name == $wps_check_email ) {
 									$html                = '<div class="amount_wrapper">';
-									$html               .= '<div style="margin-bottom: 8px;"><strong style="color: #666; font-size: 14px;">' . __( 'Coupon Code:', 'woo-gift-cards-lite' ) . '</strong></div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0;">';
-									$html               .= '<span class="wps-balance-coupon-code" style="font-size: 20px; color: ' . $coupon_color . '; background: #fff; padding: 12px 20px; border: 2px dashed ' . $coupon_color . '; border-radius: 5px; display: inline-block; font-weight: 600; letter-spacing: 1px;">' . esc_html( $coupon ) . '</span>';
-									$html               .= '</div>';
-									$html               .= '<div style="text-align: center; margin: 10px 0 15px 0;">';
-									$html               .= '<button type="button" class="wps-copy-balance-btn" data-coupon="' . esc_attr( $coupon ) . '" style="background: ' . $button_color . '; color: #fff; border: none; padding: 10px 24px; border-radius: 3px; cursor: pointer; font-size: 14px; font-weight: 600;">' . __( 'Copy Code', 'woo-gift-cards-lite' ) . '</button>';
-									$html               .= '</div>';
 									$html               .= '<div><strong style="color: #666; font-size: 14px;">' . __( 'Balance:', 'woo-gift-cards-lite' ) . '</strong> <span style="font-size: 16px; font-weight: 600;">' . wc_price( $left_amount ) . '</span></div>';
 									$html               .= '</div>';
 									$response['result']  = true;
@@ -2954,6 +2952,42 @@ class Woocommerce_Gift_Cards_Lite_Public {
 
 				$coupon_id = $coupon->get_id();
 				if ( ! empty( $coupon_id ) ) {
+
+					// Security Fix #45219: Verify current user is the intended recipient.
+					// This prevents attackers from hijacking cards by changing their account email.
+					$current_user            = get_user_by( 'id', $user_id );
+					$recipient_user_id       = get_post_meta( $coupon_id, 'wps_wgm_giftcard_coupon_recipient_user_id', true );
+					$recipient_email         = get_post_meta( $coupon_id, 'wps_wgm_giftcard_coupon_mail_to', true );
+					$recipient_binding_token = get_post_meta( $coupon_id, 'wps_wgm_giftcard_recipient_binding_token', true );
+
+					// Validate recipient authorization using the most secure method available.
+					// Priority: binding token > user ID > email (legacy only for old cards).
+					$is_authorized = false;
+
+					if ( ! empty( $recipient_binding_token ) ) {
+						// Most secure: validate using the random binding token delivered with the card.
+						// The token must be provided by the recipient as proof of card possession.
+						$provided_token = ! empty( $_POST['wps_gc_token'] ) ? sanitize_text_field( wp_unslash( $_POST['wps_gc_token'] ) ) : '';
+						if ( ! empty( $provided_token ) ) {
+							$is_authorized = hash_equals( $recipient_binding_token, $provided_token );
+						}
+					} elseif ( ! empty( $recipient_user_id ) ) {
+						// Fallback: validate by user ID (for cards issued between fix attempts).
+						$is_authorized = ( $current_user && $user_id === (int) $recipient_user_id );
+					} elseif ( ! empty( $recipient_email ) ) {
+						// Legacy: validate by email (ONLY for old cards created before any fix).
+						// This path is vulnerable but maintained for backwards compatibility.
+						$is_authorized = ( $current_user && $current_user->user_email === $recipient_email );
+					}
+
+					if ( ! $is_authorized ) {
+						$response = array(
+							'result' => false,
+							'msg'    => __( 'You are not authorized to redeem this gift card. This gift card was sent to a different recipient.', 'woo-gift-cards-lite' ),
+						);
+						wp_send_json( $response );
+						wp_die();
+					}
 
 					$coupon_amount = $coupon->get_amount();
 					if ( $coupon->is_valid() ) {
@@ -3224,6 +3258,21 @@ class Woocommerce_Gift_Cards_Lite_Public {
 			throw new Exception( esc_html__( 'This gift card has been disabled.', 'woo-gift-cards-lite' ) );
 		}
 
+		// CVE-2026-19436 Fix: Prevent discount coupons from being applied to gift card purchases.
+		// Gift cards should always be sold at face value to prevent exploitation where a customer
+		// buys a discounted gift card but receives the full pre-discount value as spendable credit.
+		if ( ! $this->wps_common_fun->wps_wgm_is_giftcard_coupon( $coupon ) ) {
+			// This is a regular discount coupon, check if cart contains gift card products.
+			if ( ! empty( WC()->cart ) ) {
+				foreach ( WC()->cart->get_cart() as $cart_item ) {
+					$_product = wc_get_product( $cart_item['product_id'] );
+					if ( $_product && $_product->is_type( 'wgm_gift_card' ) ) {
+						throw new Exception( esc_html__( 'Discount coupons cannot be applied to gift card purchases. Please remove gift cards from your cart to use this coupon.', 'woo-gift-cards-lite' ) );
+					}
+				}
+			}
+		}
+
 		return $is_valid;
 	}
 
@@ -3393,7 +3442,7 @@ class Woocommerce_Gift_Cards_Lite_Public {
 		 *
 		 * @param int $product_id Product ID.
 		 * @return bool Whether the product is a gift card.
-		 * @since 3.2.9
+		 * @since 3.2.10
 		 */
 	private function wps_wgc_is_gift_card_product( $product_id ) {
 		$product = wc_get_product( $product_id );
@@ -3411,7 +3460,7 @@ class Woocommerce_Gift_Cards_Lite_Public {
 	 *
 	 * @param array $packages Shipping packages.
 	 * @return array Modified packages with adjusted totals.
-	 * @since 3.2.9
+	 * @since 3.2.10
 	 */
 	public function wps_wgc_exclude_gc_from_free_shipping( $packages ) {
 		if ( ! WC()->cart || WC()->cart->is_empty() ) {

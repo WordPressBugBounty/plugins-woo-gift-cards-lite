@@ -3,10 +3,10 @@ Contributors: wpswings
 Donate link:  https://wpswings.com/
 Tags: gift, gift card, gift certificates, woocommerce gift cards, gift vouchers
 Requires at least: 6.7
-Tested up to: 7.0
+Tested up to: 7.1
 WC requires at least: 6.5
-WC tested up to: 10.9.4
-Stable tag:  3.2.9
+WC tested up to: 11.0.1
+Stable tag:  3.2.10
 Requires PHP: 7.4
 License: GPL-3.0+
 License URI: http://www.gnu.org/licenses/gpl-3.0.html
@@ -322,6 +322,13 @@ Please visit [**WP Swings Gift cards Knowledge Base**](https://support.wpswings.
 
 == Changelog ==
 
+= 3.2.10 - Released on 1 September 2026 =
+* New: Compatibility with the latest WC ( 11.0.1 ) and WP ( 7.1 )
+* Enhancement: DB Query Optimisation
+* Enhancement: PHP 8.3 Compatibility Audits & Fixes
+* Enhancement: Full HPOS Compatibility 
+* Enhancement: WooCommerce Blocks — Full Cart & Checkout Compatibility
+ 
 = 3.2.9 - Released on 31 July 2026 =
 * New: Compatibility with the latest WC ( 10.9.4 ) and WP ( 7.0 )
 * Fix: Design and Minor Bug Fixes
@@ -683,6 +690,10 @@ New: Email Template for Mother's Day
 * First version
 
 == Upgrade Notice ==
-= 3.2.9 - Released on 31 July 2026 =
-* New: Compatibility with the latest WC ( 10.9.4 ) and WP ( 7.0 )
-* Fix: Design and Minor Bug Fixes
+
+= 3.2.10 - Released on 1 September 2026 =
+* New: Compatibility with the latest WC ( 11.0.1 ) and WP ( 7.1 )
+* Enhancement: DB Query Optimisation
+* Enhancement: PHP 8.3 Compatibility Audits & Fixes
+* Enhancement: Full HPOS Compatibility 
+* Enhancement: WooCommerce Blocks — Full Cart & Checkout Compatibility
