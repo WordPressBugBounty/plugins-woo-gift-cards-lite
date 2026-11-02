@@ -740,6 +740,7 @@ class Woocommerce_Gift_Cards_Lite_Public {
 	 * @param   array $product_id  product Id.
 	 * @param   array $variation_id  variation_id.
 	 * @return  $the_cart_data
+	 * @throws Exception When the gift card amount is invalid or the nonce fails.
 	 * @author WP Swings <webmaster@wpswings.com>
 	 * @link https://www.wpswings.com/
 	 */
@@ -832,13 +833,26 @@ class Woocommerce_Gift_Cards_Lite_Public {
 									}
 								} elseif ( isset( $product_pricing['type'] ) && 'wps_wgm_range_price' == $product_pricing['type'] ) {
 
-									if ( $wps_wgm_price > $product_pricing['to'] || $wps_wgm_price < $product_pricing['from'] ) {
+									if ( ! is_numeric( $wps_wgm_price ) || $wps_wgm_price > $product_pricing['to'] || $wps_wgm_price < $product_pricing['from'] ) {
 										$item_meta['wps_wgm_price'] = $product_pricing['default_price'];
 									} else {
 										$item_meta['wps_wgm_price'] = $wps_wgm_price;
 									}
+								} elseif ( isset( $product_pricing['type'] ) && 'wps_wgm_user_price' == $product_pricing['type'] ) {
+									// Validate the user defined price server-side: numeric, > 0 and not below the configured minimum.
+									$min_user_price = isset( $product_pricing['min_user_price'] ) && is_numeric( $product_pricing['min_user_price'] ) ? floatval( $product_pricing['min_user_price'] ) : 0;
+									if ( ! is_numeric( $wps_wgm_price ) || floatval( $wps_wgm_price ) <= 0 || floatval( $wps_wgm_price ) < $min_user_price ) {
+										// WC_Cart::add_to_cart() catches this and shows it as an error notice.
+										throw new Exception( esc_html__( 'Gift Card price should not be less than the minimum amount.', 'woo-gift-cards-lite' ) );
+									}
+									$item_meta['wps_wgm_price'] = $wps_wgm_price;
 								} else {
 									$item_meta['wps_wgm_price'] = $wps_wgm_price;
+								}
+
+								// Never allow a non-numeric, zero or negative gift card amount into the cart.
+								if ( ! is_numeric( $item_meta['wps_wgm_price'] ) || floatval( $item_meta['wps_wgm_price'] ) <= 0 ) {
+									throw new Exception( esc_html__( 'Invalid gift card amount.', 'woo-gift-cards-lite' ) );
 								}
 							}
 							if ( isset( $_POST['wps_wgm_selected_temp'] ) ) {
@@ -1002,6 +1016,8 @@ class Woocommerce_Gift_Cards_Lite_Public {
 								$gift_price = apply_filters( 'wps_wgm_price_conversion_wcml', $gift_price );
 							}
 							$gift_price = apply_filters( 'wps_wgm_before_calculate_totals', $gift_price, $value );
+							// A gift card line must never carry a negative price.
+							$gift_price = is_numeric( $gift_price ) ? max( 0, floatval( $gift_price ) ) : 0;
 							$value['data']->set_price( $gift_price );
 						}
 					}
@@ -2390,6 +2406,9 @@ class Woocommerce_Gift_Cards_Lite_Public {
 				// Legacy: validate by email (ONLY for old cards created before any fix).
 				// This path is vulnerable but maintained for backwards compatibility.
 				$is_authorized = ( $current_user && $current_user->user_email === $recipient_email );
+			} else {
+				// No recipient information available; treat as authorized.
+				$is_authorized = true; // Allow redemption if no recipient info is set (legacy behavior).
 			}
 
 			if ( ! $is_authorized ) {
@@ -2412,6 +2431,11 @@ class Woocommerce_Gift_Cards_Lite_Public {
 						$expiry_date_timestamp = strtotime( $expiry_date_timestamp );
 						$timestamp             = strtotime( gmdate( 'Y-m-d' ) );
 						$expirydiff            = $expiry_date_timestamp - $timestamp;
+					}
+
+					// Atomically claim the coupon balance so concurrent requests cannot redeem it twice.
+					if ( ! empty( $coupon_amount ) && 0 < $expirydiff ) {
+						$coupon_amount = $this->wps_wgm_claim_coupon_amount( $coupon_id );
 					}
 
 					if ( ! empty( $coupon_amount ) && 0 < $expirydiff ) {
@@ -2927,6 +2951,39 @@ class Woocommerce_Gift_Cards_Lite_Public {
 	}
 
 	/**
+	 * Atomically set a coupon's amount to zero and return the amount it held.
+	 *
+	 * Uses a conditional UPDATE so that, among concurrent requests, only the one
+	 * whose update actually changes the row receives the balance.
+	 *
+	 * @param int $coupon_id coupon_id.
+	 * @return float Claimed amount, or 0 if the coupon was already emptied.
+	 */
+	public function wps_wgm_claim_coupon_amount( $coupon_id ) {
+		global $wpdb;
+
+		$coupon_id = absint( $coupon_id );
+		if ( empty( $coupon_id ) ) {
+			return 0;
+		}
+
+		// Read directly from the database to bypass any stale object cache.
+		$raw_amount = $wpdb->get_var( $wpdb->prepare( "SELECT meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = 'coupon_amount' LIMIT 1", $coupon_id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		if ( null === $raw_amount || ! is_numeric( $raw_amount ) || 0 >= (float) $raw_amount ) {
+			return 0;
+		}
+
+		$updated = $wpdb->query( $wpdb->prepare( "UPDATE {$wpdb->postmeta} SET meta_value = '0' WHERE post_id = %d AND meta_key = 'coupon_amount' AND meta_value = %s", $coupon_id, $raw_amount ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
+		clean_post_cache( $coupon_id );
+
+		if ( empty( $updated ) ) {
+			return 0;
+		}
+
+		return (float) $raw_amount;
+	}
+
+	/**
 	 * This function is used to redeem coupon amount.
 	 *
 	 * @return void
@@ -2983,11 +3040,15 @@ class Woocommerce_Gift_Cards_Lite_Public {
 
 					$coupon_amount = $coupon->get_amount();
 					if ( $coupon->is_valid() ) {
+						// Atomically claim the coupon balance before crediting points.
+						if ( $coupon_amount > 0 ) {
+							$coupon_amount = $this->wps_wgm_claim_coupon_amount( $coupon_id );
+						}
 						if ( $coupon_amount > 0 ) {
 
-							$this->wps_wgm_updating_par_points( $user_id, $coupon_amount, $coupon );
 							$coupon->set_amount( 0 );
 							$coupon->save();
+							$this->wps_wgm_updating_par_points( $user_id, $coupon_amount, $coupon );
 							do_action( 'wps_wgm_send_mail_remaining_amount', $coupon_id, 0 );
 							$response['result'] = true;
 							$response['msg']    = esc_html__( 'Coupon redeem successfully...', 'woo-gift-cards-lite' );
